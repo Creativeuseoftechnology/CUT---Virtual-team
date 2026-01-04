@@ -18,7 +18,8 @@
     "pdfjs-dist": "3.11.174",
     "react-markdown": "9.0.1",
     "remark-gfm": "4.0.0",
-    "jspdf": "2.5.1"
+    "jspdf": "2.5.1",
+    "diff": "5.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

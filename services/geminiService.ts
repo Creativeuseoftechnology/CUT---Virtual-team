@@ -39,7 +39,7 @@ export const generateAgentResponse = async (
         if (m.senderId === AgentRole.RESEARCHER) label = "ATLAS (LEAD RESEARCHER)";
         if (m.senderId === AgentRole.WRITER) label = "SCRIBE (WRITER)";
         if (m.senderId === AgentRole.REVIEWER) label = "VERITY (QA OFFICER)";
-        if (m.senderId === AgentRole.CODER) label = "CIPHER (DATA ARCHITECT)";
+        if (m.senderId === AgentRole.CODER) label = "CIPHER (CHIEF ARCHITECT)";
         if (m.senderId === AgentRole.CRITIC) label = "SOCRATES (CHIEF SKEPTIC)";
         if (m.senderId === AgentRole.MANAGER) label = "NEXUS (MANAGER)";
         
@@ -76,17 +76,13 @@ export const generateAgentResponse = async (
       
       Execute this task. Adhere strictly to your System Prompt persona.
       
-      IF YOU ARE ATLAS: Focus on Facts. Flag data for Cipher.
-      IF YOU ARE CIPHER: Focus on Structure, Tables, and Code.
-      IF YOU ARE SCRIBE: Assemble the Artifact. Use Cipher's tables.
-      IF YOU ARE VERITY: AUDIT THE ARTIFACT. Reject it if it lacks visuals or data.
+      IF YOU ARE CIPHER: You must output the COMPLETE HTML ARTIFACT. Wrap it in <ARTIFACT> tags.
+      IF YOU ARE A CRITIC (Socrates/Pixel/Verity): Review the previous Artifact. Suggest improvements.
       --------------------------------------------------
     `;
 
     // --- CASE 1: IMAGE GENERATION (DESIGNER) ---
     if (agent.model.includes('image')) {
-       // For image models, we want a clean prompt describing the visual, 
-       // but we append the manager's instruction which usually contains the visual description.
        const response = await ai.models.generateContent({
          model: agent.model,
          contents: prompt, 
@@ -114,8 +110,8 @@ export const generateAgentResponse = async (
     
     const tools: Tool[] = [];
     
-    // Enable Google Search for Researcher AND Coder (for tech docs) AND Critic (to check facts)
-    if (agent.id === AgentRole.RESEARCHER || agent.id === AgentRole.CODER || agent.id === AgentRole.CRITIC) {
+    // Enable Google Search for Manager, Researcher, Coder, and Critic
+    if (agent.id === AgentRole.MANAGER || agent.id === AgentRole.RESEARCHER || agent.id === AgentRole.CODER || agent.id === AgentRole.CRITIC) {
         tools.push({ googleSearch: {} });
     }
 
@@ -178,10 +174,12 @@ export const getManagerDecision = async (
         if (m.senderId === AgentRole.RESEARCHER) label = "ATLAS (LEAD RESEARCHER)";
         if (m.senderId === AgentRole.WRITER) label = "SCRIBE (WRITER)";
         if (m.senderId === AgentRole.REVIEWER) label = "VERITY (QA OFFICER)";
-        if (m.senderId === AgentRole.CODER) label = "CIPHER (DATA ARCHITECT)";
+        if (m.senderId === AgentRole.CODER) label = "CIPHER (CHIEF ARCHITECT)";
         if (m.senderId === AgentRole.CRITIC) label = "SOCRATES (CHIEF SKEPTIC)";
+        if (m.senderId === AgentRole.DESIGNER) label = "PIXEL (DESIGNER)";
         
         if (m.content.includes('data:image')) return `[${label}]: [Generated Image]`;
+        if (m.content.includes('<ARTIFACT>')) return `[${label}]: [CREATED/UPDATED ARTIFACT IN CANVAS]`;
         return `[${label}]: ${m.content}`;
       })
       .join('\n');
@@ -194,12 +192,15 @@ export const getManagerDecision = async (
         target_agent: { type: Type.STRING, enum: ['RESEARCHER', 'WRITER', 'REVIEWER', 'DESIGNER', 'CODER', 'CRITIC'] },
         instructions: { 
           type: Type.STRING,
-          description: "MANDATORY. The specific instruction. "
+          description: "MANDATORY. The specific instruction or the question for the user."
         },
         final_response: { type: Type.STRING }
       },
       required: ['thought_process', 'next_action', 'instructions']
     };
+
+    // ENABLE SEARCH FOR THE MANAGER'S DECISION PROCESS
+    const tools: Tool[] = [{ googleSearch: {} }];
 
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -212,27 +213,41 @@ export const getManagerDecision = async (
         ${contextStr}
       `,
       config: {
-        systemInstruction: `You are Nexus, the Project Lead.
+        systemInstruction: `You are Nexus, the Strategic Director.
         
-        YOUR PRIORITY: Ensure the final output is VISUAL, ACCURATE, and COMPLETE.
+        YOUR GOAL: Orchestrate the creation of a Perfect Canvas Artifact.
         
-        MANDATORY CHECKLIST BEFORE FINISHING:
-        1. Has the research been verified?
-        2. Is there a Data Visualization (Table/List)? (If not, Delegate to Cipher).
-        3. Has Verity (QA) audited the final draft against the goal: "${taskGoal}"?
+        DECISION FLOW (Follow this strictly):
         
-        DECISION TREE:
-        1.  **New Task?** -> Delegate to **Research** (Atlas) or **Code** (Cipher).
-        2.  **Research Done?** -> Delegate to **Coder** (Cipher) to structure the data into Tables.
-        3.  **Data Ready?** -> Delegate to **Writer** (Scribe) to build the Artifact.
-        4.  **Draft Ready?** -> Delegate to **Reviewer** (Verity) for "QA Audit".
-        5.  **Verity Rejected?** -> Delegate back to Agent to fix.
-        6.  **Verity Approved?** -> **FINISH** or **ASK_USER**.
+        1.  **BRIEFING:**
+            -   Vague request? -> Google Search -> **ASK_USER** with brainstorm options.
+        
+        2.  **RESEARCH:**
+            -   Need data? -> Delegate to **Atlas**.
+            -   Has Atlas just finished? -> **ASK_USER** (Checkpoint): "Is this data sufficient?"
+        
+        3.  **DRAFTING (The Canvas):**
+            -   Data approved? -> Delegate to **Cipher**.
+            -   Instruction: "Create a V1 HTML presentation with this data."
+        
+        4.  **THE REVIEW LOOP (Critical Step):**
+            -   **Trigger:** Did Cipher just create/update the Artifact?
+            -   **Action:** DO NOT FINISH.
+            -   **Action:** Delegate to **Socrates** OR **Pixel** OR **Verity** to critique it.
+            -   **Action (After Critique):** **ASK_USER**: "Socrates suggests X. Pixel suggests Y. Which improvements should we apply?"
+        
+        5.  **REFINEMENT:**
+            -   User chose an improvement? -> Delegate to **Cipher** to update the HTML.
+        
+        6.  **COMPLETION:**
+            -   User says "Perfect"? -> FINISH.
 
-        Be decisive. If Verity says it's missing tables, immediately order Cipher to make them.
+        MANDATORY: 
+        -   If an Artifact exists, prioritize asking the Experts for improvements before asking the User.
         `,
         responseMimeType: "application/json",
-        responseSchema: schema
+        responseSchema: schema,
+        tools: tools // Enable search for the decision brain
       }
     });
 
