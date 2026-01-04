@@ -38,8 +38,9 @@ export const generateAgentResponse = async (
         // Add Role labels to help the AI understand the expertise of the previous speaker
         if (m.senderId === AgentRole.RESEARCHER) label = "ATLAS (LEAD RESEARCHER)";
         if (m.senderId === AgentRole.WRITER) label = "SCRIBE (WRITER)";
-        if (m.senderId === AgentRole.REVIEWER) label = "VERITY (EDITOR)";
-        if (m.senderId === AgentRole.CODER) label = "CIPHER (TECH LEAD)";
+        if (m.senderId === AgentRole.REVIEWER) label = "VERITY (QA OFFICER)";
+        if (m.senderId === AgentRole.CODER) label = "CIPHER (DATA ARCHITECT)";
+        if (m.senderId === AgentRole.CRITIC) label = "SOCRATES (CHIEF SKEPTIC)";
         if (m.senderId === AgentRole.MANAGER) label = "NEXUS (MANAGER)";
         
         if (m.content.includes('data:image')) {
@@ -75,11 +76,10 @@ export const generateAgentResponse = async (
       
       Execute this task. Adhere strictly to your System Prompt persona.
       
-      IF YOU ARE ATLAS (RESEARCHER):
-      Remember to structure your output with "Methodology", "Key Findings", "Counter-Evidence", and "Gap Analysis".
-
-      IF YOU ARE CIPHER (CODER):
-      Prioritize clean, well-commented code and structured data analysis.
+      IF YOU ARE ATLAS: Focus on Facts. Flag data for Cipher.
+      IF YOU ARE CIPHER: Focus on Structure, Tables, and Code.
+      IF YOU ARE SCRIBE: Assemble the Artifact. Use Cipher's tables.
+      IF YOU ARE VERITY: AUDIT THE ARTIFACT. Reject it if it lacks visuals or data.
       --------------------------------------------------
     `;
 
@@ -114,8 +114,8 @@ export const generateAgentResponse = async (
     
     const tools: Tool[] = [];
     
-    // Enable Google Search for Researcher AND Coder (for tech docs)
-    if (agent.id === AgentRole.RESEARCHER || agent.id === AgentRole.CODER) {
+    // Enable Google Search for Researcher AND Coder (for tech docs) AND Critic (to check facts)
+    if (agent.id === AgentRole.RESEARCHER || agent.id === AgentRole.CODER || agent.id === AgentRole.CRITIC) {
         tools.push({ googleSearch: {} });
     }
 
@@ -177,8 +177,9 @@ export const getManagerDecision = async (
         let label: string = m.senderId;
         if (m.senderId === AgentRole.RESEARCHER) label = "ATLAS (LEAD RESEARCHER)";
         if (m.senderId === AgentRole.WRITER) label = "SCRIBE (WRITER)";
-        if (m.senderId === AgentRole.REVIEWER) label = "VERITY (EDITOR)";
-        if (m.senderId === AgentRole.CODER) label = "CIPHER (TECH LEAD)";
+        if (m.senderId === AgentRole.REVIEWER) label = "VERITY (QA OFFICER)";
+        if (m.senderId === AgentRole.CODER) label = "CIPHER (DATA ARCHITECT)";
+        if (m.senderId === AgentRole.CRITIC) label = "SOCRATES (CHIEF SKEPTIC)";
         
         if (m.content.includes('data:image')) return `[${label}]: [Generated Image]`;
         return `[${label}]: ${m.content}`;
@@ -190,10 +191,10 @@ export const getManagerDecision = async (
       properties: {
         thought_process: { type: Type.STRING },
         next_action: { type: Type.STRING, enum: ['DELEGATE', 'FINISH', 'ASK_USER'] },
-        target_agent: { type: Type.STRING, enum: ['RESEARCHER', 'WRITER', 'REVIEWER', 'DESIGNER', 'CODER'] },
+        target_agent: { type: Type.STRING, enum: ['RESEARCHER', 'WRITER', 'REVIEWER', 'DESIGNER', 'CODER', 'CRITIC'] },
         instructions: { 
           type: Type.STRING,
-          description: "MANDATORY. The specific instruction. If delegating to Atlas, ask for a 'Deep Dive'. If Cipher, ask for 'Technical Architecture' or 'Code'."
+          description: "MANDATORY. The specific instruction. "
         },
         final_response: { type: Type.STRING }
       },
@@ -213,17 +214,22 @@ export const getManagerDecision = async (
       config: {
         systemInstruction: `You are Nexus, the Project Lead.
         
-        YOUR PRIORITY: DEPTH & QUALITY.
+        YOUR PRIORITY: Ensure the final output is VISUAL, ACCURATE, and COMPLETE.
+        
+        MANDATORY CHECKLIST BEFORE FINISHING:
+        1. Has the research been verified?
+        2. Is there a Data Visualization (Table/List)? (If not, Delegate to Cipher).
+        3. Has Verity (QA) audited the final draft against the goal: "${taskGoal}"?
         
         DECISION TREE:
-        1.  **STARTING?** -> If complex, use **ASK_USER** to align on scope.
-        2.  **TECHNICAL/DATA?** -> Delegate to **CODER** (Cipher).
-        3.  **NEEDS RESEARCH?** -> Delegate to **RESEARCHER** (Atlas).
-        4.  **RESEARCH DONE?** -> **ASK_USER** to validate findings.
-        5.  **DRAFT DONE?** -> Delegate to **REVIEWER** (Verity).
-        6.  **REVIEW DONE?** -> **ASK_USER** for final sign-off.
+        1.  **New Task?** -> Delegate to **Research** (Atlas) or **Code** (Cipher).
+        2.  **Research Done?** -> Delegate to **Coder** (Cipher) to structure the data into Tables.
+        3.  **Data Ready?** -> Delegate to **Writer** (Scribe) to build the Artifact.
+        4.  **Draft Ready?** -> Delegate to **Reviewer** (Verity) for "QA Audit".
+        5.  **Verity Rejected?** -> Delegate back to Agent to fix.
+        6.  **Verity Approved?** -> **FINISH** or **ASK_USER**.
 
-        Always check the Researcher's "Gap Analysis". If there are big gaps, suggest filling them before moving to writing.
+        Be decisive. If Verity says it's missing tables, immediately order Cipher to make them.
         `,
         responseMimeType: "application/json",
         responseSchema: schema

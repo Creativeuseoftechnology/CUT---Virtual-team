@@ -5,6 +5,7 @@ export enum AgentRole {
   REVIEWER = 'REVIEWER',
   DESIGNER = 'DESIGNER',
   CODER = 'CODER',
+  CRITIC = 'CRITIC',
   USER = 'USER'
 }
 

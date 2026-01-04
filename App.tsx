@@ -285,6 +285,18 @@ export default function App() {
         projectFiles
       );
 
+      // --- ARTIFACT DETECTION LOGIC ---
+      const ARTIFACT_REGEX = /<ARTIFACT>([\s\S]*?)<\/ARTIFACT>/;
+      const artifactMatch = agentResponse.match(ARTIFACT_REGEX);
+      
+      if (artifactMatch) {
+          const artifactContent = artifactMatch[1].trim();
+          // Update Canvas Content immediately
+          setCanvasContent(artifactContent);
+          // Auto-open Canvas
+          setShowCanvas(true);
+      }
+
       const resultMsg: Message = {
         id: generateId(),
         senderId: targetAgent.id,
