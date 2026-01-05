@@ -157,7 +157,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isActive, isWorking
                 type="file" 
                 ref={fileInputRef}
                 className="hidden"
-                accept=".txt,.md,.json,.csv"
+                // Removed restrictions to allow *all* text types
                 onChange={handleFileUpload}
              />
              <button 

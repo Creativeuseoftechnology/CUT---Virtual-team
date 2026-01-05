@@ -442,7 +442,7 @@ export default function App() {
                         type="file" 
                         ref={fileInputRef}
                         className="hidden"
-                        accept=".txt,.md,.json,.csv,.xlsx,.docx,.pdf"
+                        // Removed restrictions to allow ALL types
                         onChange={handleUploadSharedFile}
                     />
                     <button 
@@ -611,7 +611,7 @@ export default function App() {
                  ref={chatFileInputRef}
                  onChange={handleChatFileSelect}
                  className="hidden"
-                 accept=".txt,.md,.json,.csv,.xlsx,.docx,.pdf"
+                 // Removed restrictions to allow ALL types
               />
               <button
                  onClick={() => chatFileInputRef.current?.click()}

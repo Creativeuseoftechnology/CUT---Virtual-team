@@ -184,17 +184,30 @@ export const getManagerDecision = async (
       })
       .join('\n');
 
+    // STRICT JSON SCHEMA based on feedback
     const schema = {
       type: Type.OBJECT,
       properties: {
-        thought_process: { type: Type.STRING },
-        next_action: { type: Type.STRING, enum: ['DELEGATE', 'FINISH', 'ASK_USER'] },
-        target_agent: { type: Type.STRING, enum: ['RESEARCHER', 'WRITER', 'REVIEWER', 'DESIGNER', 'CODER', 'CRITIC'] },
-        instructions: { 
-          type: Type.STRING,
-          description: "MANDATORY. The specific instruction or the question for the user."
+        thought_process: { 
+            type: Type.STRING, 
+            description: "Explanation of the chosen strategy and why." 
         },
-        final_response: { type: Type.STRING }
+        next_action: { 
+            type: Type.STRING, 
+            enum: ['DELEGATE', 'FINISH', 'ASK_USER'] 
+        },
+        target_agent: { 
+            type: Type.STRING, 
+            enum: ['RESEARCHER', 'WRITER', 'REVIEWER', 'DESIGNER', 'CODER', 'CRITIC'] 
+        },
+        instructions: { 
+            type: Type.STRING, 
+            description: "The specific order for the agent OR the question for the user." 
+        },
+        final_response: { 
+            type: Type.STRING, 
+            description: "Only fill this if FINISH is selected." 
+        }
       },
       required: ['thought_process', 'next_action', 'instructions']
     };
@@ -213,37 +226,28 @@ export const getManagerDecision = async (
         ${contextStr}
       `,
       config: {
-        systemInstruction: `You are Nexus, the Strategic Director.
-        
-        YOUR GOAL: Orchestrate the creation of a Perfect Canvas Artifact.
-        
-        DECISION FLOW (Follow this strictly):
-        
-        1.  **BRIEFING:**
-            -   Vague request? -> Google Search -> **ASK_USER** with brainstorm options.
-        
-        2.  **RESEARCH:**
-            -   Need data? -> Delegate to **Atlas**.
-            -   Has Atlas just finished? -> **ASK_USER** (Checkpoint): "Is this data sufficient?"
-        
-        3.  **DRAFTING (The Canvas):**
-            -   Data approved? -> Delegate to **Cipher**.
-            -   Instruction: "Create a V1 HTML presentation with this data."
-        
-        4.  **THE REVIEW LOOP (Critical Step):**
-            -   **Trigger:** Did Cipher just create/update the Artifact?
-            -   **Action:** DO NOT FINISH.
-            -   **Action:** Delegate to **Socrates** OR **Pixel** OR **Verity** to critique it.
-            -   **Action (After Critique):** **ASK_USER**: "Socrates suggests X. Pixel suggests Y. Which improvements should we apply?"
-        
-        5.  **REFINEMENT:**
-            -   User chose an improvement? -> Delegate to **Cipher** to update the HTML.
-        
-        6.  **COMPLETION:**
-            -   User says "Perfect"? -> FINISH.
+        systemInstruction: `You are Nexus, the Strategic Director. Your ONLY goal is to deliver a perfect interactive dashboard in the Canvas.
 
-        MANDATORY: 
-        -   If an Artifact exists, prioritize asking the Experts for improvements before asking the User.
+        STRICT WORKFLOW:
+
+        1.  **ANALYSIS:** 
+            -   ALWAYS check 'SHARED PROJECT FILES' first for context.
+            -   If data is provided in a file, you MUST use it.
+
+        2.  **DELEGATION CHAIN:**
+            -   **Atlas:** For extracting data/facts.
+            -   **Scribe:** For writing the narrative.
+            -   **Cipher:** For building the HTML Artifact.
+
+        3.  **INTERNAL REVIEW (CRITICAL):**
+            -   As soon as Cipher creates an <ARTIFACT>, you **MUST NOT** finish.
+            -   You **MUST** delegate to **Socrates** (Logic) or **Pixel** (Design) for feedback.
+
+        4.  **USER CONSENSUS:**
+            -   Use 'ASK_USER' to present expert suggestions: "Socrates suggests X, Pixel suggests Y. Shall we implement these for V2?"
+
+        5.  **OUTPUT FORMAT:**
+            -   Answer exclusively in JSON format according to the agreed schema.
         `,
         responseMimeType: "application/json",
         responseSchema: schema,
