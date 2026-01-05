@@ -75,6 +75,79 @@ export const clearDB = async (): Promise<void> => {
     });
 };
 
+// --- NEW: Search Capability (Client-Side RAG) ---
+
+interface SearchResult {
+    fileId: string;
+    fileName: string;
+    excerpt: string;
+    score: number;
+}
+
+export const searchFiles = async (query: string, availableFiles: ProjectFile[]): Promise<string> => {
+    // Basic normalization
+    const terms = query.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(t => t.length > 2);
+    
+    if (terms.length === 0) return "Query too short to search.";
+
+    const results: SearchResult[] = [];
+
+    // Iterate through all available files
+    for (const file of availableFiles) {
+        const content = await getFileContentFromDB(file.id);
+        if (!content) continue;
+
+        // Smart Chunking: Overlapping windows
+        // Window size 1000 chars, overlap 200 chars to avoid cutting sentences context
+        const chunkSize = 1000;
+        const overlap = 200;
+        
+        for (let i = 0; i < content.length; i += (chunkSize - overlap)) {
+            const chunk = content.substring(i, i + chunkSize);
+            const lowerChunk = chunk.toLowerCase();
+            
+            // Scoring Logic: Count term occurrences
+            let score = 0;
+            let foundTerms = 0;
+            
+            terms.forEach(term => {
+                if (lowerChunk.includes(term)) {
+                    // Simple count
+                    const count = lowerChunk.split(term).length - 1;
+                    score += count;
+                    foundTerms++;
+                }
+            });
+
+            // Boost score if multiple DIFFERENT terms are found (better match)
+            if (foundTerms > 1) score = score * 1.5;
+
+            if (score > 0) {
+                results.push({
+                    fileId: file.id,
+                    fileName: file.name,
+                    excerpt: chunk.replace(/\s+/g, ' ').trim(), // Clean up newlines
+                    score: score
+                });
+            }
+        }
+    }
+
+    // Sort by Score desc
+    results.sort((a, b) => b.score - a.score);
+
+    // Take top 5 most relevant chunks
+    const topResults = results.slice(0, 5);
+
+    if (topResults.length === 0) return "No directly relevant information found in the project files for these keywords.";
+
+    // Format for the AI
+    return `FOUND ${topResults.length} RELEVANT SECTIONS FROM KNOWLEDGE BASE:\n\n` + topResults.map((r, index) => 
+        `--- RESULT ${index + 1} (Score: ${r.score}) ---\n[SOURCE FILE: "${r.fileName}"]\n"${r.excerpt}..."`
+    ).join('\n\n');
+};
+
+
 // --- File Parsers ---
 
 const parsePDF = async (arrayBuffer: ArrayBuffer): Promise<string> => {
@@ -101,21 +174,27 @@ const parseExcel = (arrayBuffer: ArrayBuffer): string => {
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
         const sheetNames = workbook.SheetNames;
         
-        // CRITICAL UPDATE: Provide a clear summary of all tabs first so the Agent knows what exists.
-        let fullText = `[METADATA]: EXCEL WORKBOOK SUMMARY\n`;
-        fullText += `Total Sheets: ${sheetNames.length}\n`;
-        fullText += `Sheet Names: ${sheetNames.join(', ')}\n`;
+        // COMPRESSED JSON STRATEGY
+        // We create a "Dense Matrix" (Array of Arrays) instead of Array of Objects.
+        // This is significantly more token-efficient for LLMs and allows Cipher to easily map to Chart.js.
+
+        let fullText = `[METADATA]: EXCEL DATASET (Structured)\n`;
+        fullText += `Format: JSON_MATRIX (Array of Arrays). Row 0 contains Headers.\n`;
+        fullText += `Sheets: ${sheetNames.join(', ')}\n`;
         fullText += `==========================================\n\n`;
 
         sheetNames.forEach(sheetName => {
             const sheet = workbook.Sheets[sheetName];
-            // Sheet_to_csv is robust for LLMs as it preserves row structure
-            const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+            // header: 1 produces [["ColA", "ColB"], [1, 2], [3, 4]]
+            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
             
-            fullText += `=== START OF SHEET: "${sheetName}" ===\n`;
-            fullText += `[Context: Data from tab named '${sheetName}']\n`;
-            fullText += csv;
-            fullText += `\n=== END OF SHEET: "${sheetName}" ===\n\n`;
+            if (jsonData.length > 0) {
+                fullText += `=== DATASET: "${sheetName}" ===\n`;
+                fullText += `[Type: JSON_MATRIX]\n`;
+                // We stringify the matrix. This is very dense and token efficient.
+                fullText += JSON.stringify(jsonData);
+                fullText += `\n=== END DATASET: "${sheetName}" ===\n\n`;
+            }
         });
         return fullText;
     } catch (e) {
@@ -134,7 +213,7 @@ const parseWord = async (arrayBuffer: ArrayBuffer): Promise<string> => {
     }
 };
 
-// Generic Text Parser (for Code, Logs, iCal, CSV, JSON, XML, etc.)
+// Generic Text Parser
 const parseTextFile = (arrayBuffer: ArrayBuffer, typeLabel: string = "TEXT"): string => {
     try {
         const decoder = new TextDecoder('utf-8');
@@ -147,12 +226,8 @@ const parseTextFile = (arrayBuffer: ArrayBuffer, typeLabel: string = "TEXT"): st
 
 export const processFile = async (file: File): Promise<{ content: string; type: string }> => {
     const arrayBuffer = await file.arrayBuffer();
-    // Get extension and handle edge cases (like .tar.gz) - simplistic approach here
     const extension = file.name.split('.').pop()?.toLowerCase() || 'txt';
-
     let content = "";
-    
-    // --- ROUTING LOGIC ---
     
     if (extension === 'pdf') {
         content = await parsePDF(arrayBuffer);
@@ -164,11 +239,12 @@ export const processFile = async (file: File): Promise<{ content: string; type: 
         content = await parseWord(arrayBuffer);
     } 
     else if (['ics', 'ical', 'ifb'].includes(extension)) {
-        // Explicit handling for Calendar files
         content = parseTextFile(arrayBuffer, "CALENDAR/ICAL");
     }
     else if (['csv', 'tsv'].includes(extension)) {
-        // Parse CSV specifically to label it
+        // Use Excel parser logic (dense matrix) for CSVs too if we wanted, 
+        // but for now text parser is fine unless we strictly want matrix.
+        // Let's keep CSV as text for simplicity unless specifically requested.
         content = parseTextFile(arrayBuffer, "CSV DATA");
     }
     else if (['json', 'xml', 'yaml', 'yml', 'toml'].includes(extension)) {
@@ -178,9 +254,6 @@ export const processFile = async (file: File): Promise<{ content: string; type: 
         content = parseTextFile(arrayBuffer, "SOURCE CODE / TEXT");
     }
     else {
-        // FALLBACK: Try to read EVERYTHING else as text. 
-        // This covers unknown code types, config files, etc.
-        // If it's a binary image or executable, it might look garbage, but better than rejecting it.
         try {
             content = parseTextFile(arrayBuffer, "UNKNOWN FILE TYPE (ATTEMPTING TEXT READ)");
         } catch (e) {
