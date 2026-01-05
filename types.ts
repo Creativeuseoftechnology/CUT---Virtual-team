@@ -45,12 +45,15 @@ export interface ManagerDecision {
   next_action: 'DELEGATE' | 'FINISH' | 'ASK_USER';
   target_agent?: AgentRole; // Required if DELEGATE
   instructions?: string;    // Required if DELEGATE
+  relevant_file_ids?: string[]; // OPTIONAL: List of File IDs relevant to this specific task
   final_response?: string;  // Required if FINISH
 }
 
 export interface ConversationState {
   messages: Message[];
   isProcessing: boolean;
+  processingStatus: string; // NEW: Holds the current detailed sub-task description
   currentTurnAgent: AgentRole | null;
   taskGoal: string;
+  critiqueLoopCount: number; // Tracks autonomous refinement loops (Critic -> Coder)
 }

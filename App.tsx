@@ -4,15 +4,17 @@ import { AGENTS as INITIAL_AGENTS } from './constants';
 import { AgentCard } from './components/AgentCard';
 import { MessageBubble } from './components/MessageBubble';
 import { Canvas } from './components/Canvas';
-import { getManagerDecision, generateAgentResponse } from './services/geminiService';
+import { getManagerDecision, generateAgentResponse, summarizeConversation } from './services/geminiService';
 import { processFile, saveFileToDB, deleteFileFromDB, clearDB } from './services/knowledgeService';
 import { StopCircle, RefreshCw, Send, Sparkles, Trash2, Download, RotateCcw, FolderOpen, FileText, Plus, X, Loader2, PanelRight, Paperclip, PanelLeft, Menu } from 'lucide-react';
 
 const INITIAL_STATE: ConversationState = {
   messages: [],
   isProcessing: false,
+  processingStatus: '',
   currentTurnAgent: null,
-  taskGoal: ''
+  taskGoal: '',
+  critiqueLoopCount: 0 // Initialize loop count
 };
 
 // Helper for ID generation
@@ -187,6 +189,35 @@ export default function App() {
       }
   };
 
+  // NEW: Update agents with manual changes
+  const handleSyncCanvasToAgents = (content: string) => {
+    // 1. Update Knowledge Base of Manager and Coder so they "know" this is the baseline
+    const timestamp = new Date().toLocaleTimeString();
+    const updateEntry = `[MANUAL_USER_UPDATE ${timestamp}]: The user manually edited the artifact. USE THIS AS THE NEW BASELINE:\n${content.substring(0, 5000)}... (truncated for memory)`;
+    
+    setAgents(prev => ({
+        ...prev,
+        [AgentRole.MANAGER]: {
+            ...prev[AgentRole.MANAGER],
+            knowledgeBase: [...prev[AgentRole.MANAGER].knowledgeBase, updateEntry]
+        },
+        [AgentRole.CODER]: {
+            ...prev[AgentRole.CODER],
+            knowledgeBase: [...prev[AgentRole.CODER].knowledgeBase, updateEntry]
+        }
+    }));
+
+    // 2. Add System/User message to chat history so the next prompt sees it immediately
+    const msg: Message = {
+        id: generateId(),
+        senderId: AgentRole.USER,
+        content: `I have manually updated the Canvas Artifact. Please use this version as the baseline for future changes:\n\n<ARTIFACT>\n${content}\n</ARTIFACT>`,
+        timestamp: Date.now(),
+        type: 'user'
+    };
+    addMessage(msg);
+  };
+
   // --- Session Management Tools ---
 
   const handleNewSession = () => {
@@ -221,11 +252,40 @@ export default function App() {
   // --- Core Logic ---
 
   const runOrchestrationLoop = async (currentHistory: Message[], task: string) => {
-    setState(prev => ({ ...prev, currentTurnAgent: AgentRole.MANAGER }));
+    // HISTORY COMPRESSION CHECK (Auto-Archivist)
+    let effectiveHistory = [...currentHistory];
+    
+    if (effectiveHistory.length > 15) {
+        setState(prev => ({ 
+            ...prev, 
+            processingStatus: 'Archiving old memories to save energy...' 
+        }));
+        
+        try {
+            effectiveHistory = await summarizeConversation(effectiveHistory);
+            // Update the UI immediately so the user sees the compression happening
+            setState(prev => ({ ...prev, messages: effectiveHistory }));
+        } catch (e) {
+            console.warn("Summarization skipped due to error, proceeding with full history.");
+        }
+    }
+
+    // MANAGER PHASE
+    setState(prev => ({ 
+      ...prev, 
+      currentTurnAgent: AgentRole.MANAGER, 
+      processingStatus: "Nexus is analyzing the strategy & catalog..." 
+    }));
     
     await new Promise(r => setTimeout(r, 800));
 
-    const decision = await getManagerDecision(currentHistory, task, projectFiles);
+    // Pass current critiqueLoopCount so Manager knows when to stop looping
+    const decision = await getManagerDecision(
+        effectiveHistory, // Use the potentially compressed history
+        task, 
+        projectFiles,
+        state.critiqueLoopCount // <--- Pass the counter
+    );
 
     if (decision.next_action === 'FINISH') {
       addMessage({
@@ -235,7 +295,8 @@ export default function App() {
         timestamp: Date.now(),
         type: 'final'
       });
-      setState(prev => ({ ...prev, isProcessing: false, currentTurnAgent: null }));
+      // Reset loop count on finish
+      setState(prev => ({ ...prev, isProcessing: false, processingStatus: '', currentTurnAgent: null, critiqueLoopCount: 0 }));
       return;
     }
 
@@ -245,17 +306,35 @@ export default function App() {
         senderId: AgentRole.MANAGER,
         content: decision.instructions || decision.final_response || "I need some input from you.",
         timestamp: Date.now(),
-        type: 'final' // We treat questions as 'final' for styling purposes (orange border)
+        type: 'final'
       });
-      // STOP PROCESSING HERE to wait for user input
-      setState(prev => ({ ...prev, isProcessing: false, currentTurnAgent: null }));
+      // Reset loop count on user interaction
+      setState(prev => ({ ...prev, isProcessing: false, processingStatus: '', currentTurnAgent: null, critiqueLoopCount: 0 }));
       return;
     }
 
     if (decision.next_action === 'DELEGATE' && decision.target_agent) {
       
+      const targetAgent = agents[decision.target_agent];
+      
       // Fallback if instructions are undefined
       const safeInstructions = decision.instructions || `Proceed with your specialty to help with: "${task}". Use the context provided.`;
+
+      // FILTER FILES
+      const relevantFiles = decision.relevant_file_ids 
+        ? projectFiles.filter(f => decision.relevant_file_ids?.includes(f.id))
+        : []; 
+
+      // --- LOOP COUNT LOGIC ---
+      const lastMsg = effectiveHistory[effectiveHistory.length - 1];
+      const isRefinementStep = 
+        decision.target_agent === AgentRole.CODER && 
+        (lastMsg?.senderId === AgentRole.CRITIC || lastMsg?.senderId === AgentRole.DESIGNER || lastMsg?.senderId === AgentRole.REVIEWER);
+
+      if (isRefinementStep) {
+          setState(prev => ({ ...prev, critiqueLoopCount: prev.critiqueLoopCount + 1 }));
+      }
+      // ------------------------
 
       const delegationMsg: Message = {
         id: generateId(),
@@ -267,23 +346,52 @@ export default function App() {
       
       setState(prev => ({
         ...prev,
-        messages: [...prev.messages, delegationMsg]
+        messages: [...prev.messages, delegationMsg],
+        // Update status for the delegation phase
+        processingStatus: `Delegating to ${targetAgent?.name}...`
       }));
 
-      setState(prev => ({ ...prev, currentTurnAgent: decision.target_agent! }));
+      // Set state for the executing agent
+      let specificStatus = `${targetAgent?.name} is working...`;
+      if (decision.target_agent === AgentRole.RESEARCHER) specificStatus = `${targetAgent?.name} is searching Google & analyzing data...`;
+      if (decision.target_agent === AgentRole.WRITER) specificStatus = `${targetAgent?.name} is drafting content...`;
+      if (decision.target_agent === AgentRole.CODER) specificStatus = `${targetAgent?.name} is building the dashboard...`;
+      if (decision.target_agent === AgentRole.CRITIC) specificStatus = `${targetAgent?.name} is reviewing for logic...`;
+      if (decision.target_agent === AgentRole.DESIGNER) specificStatus = `${targetAgent?.name} is analyzing the design...`;
+
+      setState(prev => ({ 
+        ...prev, 
+        currentTurnAgent: decision.target_agent!, 
+        processingStatus: specificStatus 
+      }));
       
-      const targetAgent = agents[decision.target_agent];
       if (!targetAgent) {
-        setState(prev => ({ ...prev, isProcessing: false, currentTurnAgent: null }));
+        addMessage({
+            id: generateId(),
+            senderId: AgentRole.MANAGER,
+            content: `[SYSTEM ERROR]: Nexus attempted to delegate to an unknown agent: ${decision.target_agent}. I will re-evaluate.`,
+            timestamp: Date.now(),
+            type: 'result'
+        });
+        setTimeout(() => {
+            runOrchestrationLoop([...effectiveHistory, delegationMsg], task);
+        }, 500);
         return;
       }
 
-      const agentResponse = await generateAgentResponse(
-        targetAgent, 
-        safeInstructions, // Pass the safe instructions to the agent
-        [...currentHistory, delegationMsg],
-        projectFiles
-      );
+      // EXECUTION PHASE
+      let agentResponse = "";
+      try {
+          agentResponse = await generateAgentResponse(
+            targetAgent, 
+            safeInstructions, 
+            [...effectiveHistory, delegationMsg],
+            relevantFiles
+          );
+      } catch (err: any) {
+          console.error("Agent execution failed:", err);
+          agentResponse = `[SYSTEM ERROR]: ${targetAgent.name} failed to generate a response. Error: ${err.message || 'Unknown error'}. Please provide a simpler instruction or delegate to someone else.`;
+      }
 
       // --- ARTIFACT DETECTION LOGIC ---
       const ARTIFACT_REGEX = /<ARTIFACT>([\s\S]*?)<\/ARTIFACT>/;
@@ -291,9 +399,7 @@ export default function App() {
       
       if (artifactMatch) {
           const artifactContent = artifactMatch[1].trim();
-          // Update Canvas Content immediately
           setCanvasContent(artifactContent);
-          // Auto-open Canvas
           setShowCanvas(true);
       }
 
@@ -311,10 +417,11 @@ export default function App() {
       }));
 
       setTimeout(() => {
-        runOrchestrationLoop([...currentHistory, delegationMsg, resultMsg], task);
+        // Recursion passes the NEW effective history + new messages
+        runOrchestrationLoop([...effectiveHistory, delegationMsg, resultMsg], task);
       }, 500);
     } else {
-       setState(prev => ({ ...prev, isProcessing: false, currentTurnAgent: null }));
+       setState(prev => ({ ...prev, isProcessing: false, processingStatus: '', currentTurnAgent: null }));
     }
   };
 
@@ -324,11 +431,12 @@ export default function App() {
     let initialTask = inputText;
     let newFilesList = [...projectFiles];
 
-    setState(prev => ({ ...prev, isProcessing: true }));
+    setState(prev => ({ ...prev, isProcessing: true, processingStatus: 'Initializing request...' }));
 
     // 1. Process Attachment if exists
     if (chatFile) {
         setIsUploading(true);
+        setState(prev => ({ ...prev, processingStatus: `Reading ${chatFile.name}...` }));
         try {
             const { content, type } = await processFile(chatFile);
             const newFile: ProjectFile = {
@@ -342,10 +450,7 @@ export default function App() {
             await saveFileToDB(newFile, content);
             newFilesList = [...newFilesList, newFile];
             setProjectFiles(newFilesList);
-            
-            // Append context to the user message
             initialTask += `\n\n[System Note: User uploaded file '${chatFile.name}' with this request.]`;
-            
         } catch (error) {
             console.error("Chat file upload failed", error);
             alert("Failed to upload the attached file.");
@@ -368,22 +473,23 @@ export default function App() {
     setState(prev => ({
       ...prev,
       messages: newMessages,
-      taskGoal: prev.taskGoal || initialTask, // Keep original goal if just answering a question
-      isProcessing: true 
+      taskGoal: prev.taskGoal || initialTask, 
+      isProcessing: true,
+      processingStatus: 'Nexus is planning...', // Immediate feedback
+      // NOTE: We do NOT reset critiqueLoopCount here if we are CONTINUING a conversation. 
+      // But usually, a user input implies a new direction, so resetting makes sense to allow new loops.
+      critiqueLoopCount: 0 
     }));
 
     setInputText('');
     
-    // IMPORTANT: Pass the accumulated goal or the new context. 
-    // Ideally, we pass the full history and let the Manager figure out if it's a new task or a reply.
-    // We use the original 'taskGoal' if it exists, otherwise the new input is the goal.
     const effectiveGoal = state.taskGoal || initialTask;
 
     await runOrchestrationLoop(newMessages, effectiveGoal);
   };
 
   const handleStop = () => {
-    setState(prev => ({ ...prev, isProcessing: false, currentTurnAgent: null }));
+    setState(prev => ({ ...prev, isProcessing: false, processingStatus: '', currentTurnAgent: null }));
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -492,6 +598,7 @@ export default function App() {
                 agent={agent} 
                 isActive={state.currentTurnAgent === agent.id}
                 isWorking={state.isProcessing && state.currentTurnAgent === agent.id}
+                statusMessage={state.currentTurnAgent === agent.id ? state.processingStatus : ''}
                 onAddKnowledge={handleAddAgentKnowledge}
                 onUpdatePrompt={handleUpdateSystemPrompt}
                 />
@@ -533,9 +640,11 @@ export default function App() {
           
           <div className="flex items-center gap-4">
               {state.isProcessing && (
-                 <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-full border border-slate-100">
+                 <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-full border border-slate-100 transition-all animate-in fade-in zoom-in">
                    <RefreshCw size={14} className="animate-spin text-[#ec7b5d]" />
-                   <span className="text-xs font-bold text-[#575756] tracking-wide">PROCESSING</span>
+                   <span className="text-xs font-bold text-[#575756] tracking-wide truncate max-w-[200px]">
+                     {state.processingStatus || "PROCESSING"}
+                   </span>
                  </div>
               )}
               
@@ -607,11 +716,10 @@ export default function App() {
             <div className="absolute right-3 bottom-3 flex items-center gap-2">
               {/* Attachment Button */}
               <input 
-                 type="file"
+                 type="file" 
                  ref={chatFileInputRef}
                  onChange={handleChatFileSelect}
                  className="hidden"
-                 // Removed restrictions to allow ALL types
               />
               <button
                  onClick={() => chatFileInputRef.current?.click()}
@@ -661,6 +769,7 @@ export default function App() {
             onChange={setCanvasContent}
             onClose={() => setShowCanvas(false)}
             onSaveAsFile={handleSaveCanvasAsFile}
+            onSyncToTeam={handleSyncCanvasToAgents} // NEW PROP
           />
       )}
     </div>

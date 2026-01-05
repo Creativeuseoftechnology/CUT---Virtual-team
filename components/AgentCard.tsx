@@ -1,16 +1,17 @@
 import React, { useState, useRef } from 'react';
 import { Agent, AgentRole } from '../types';
-import { Database, Plus, Settings, Upload, Save, X, FileText } from 'lucide-react';
+import { Database, Plus, Settings, Upload, Save, X, FileText, Loader2 } from 'lucide-react';
 
 interface AgentCardProps {
   agent: Agent;
   isActive: boolean;
   isWorking: boolean;
+  statusMessage?: string; // New Prop for detailed status
   onAddKnowledge: (agentId: AgentRole, knowledge: string) => void;
   onUpdatePrompt: (agentId: AgentRole, prompt: string) => void;
 }
 
-export const AgentCard: React.FC<AgentCardProps> = ({ agent, isActive, isWorking, onAddKnowledge, onUpdatePrompt }) => {
+export const AgentCard: React.FC<AgentCardProps> = ({ agent, isActive, isWorking, statusMessage, onAddKnowledge, onUpdatePrompt }) => {
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [newKnowledge, setNewKnowledge] = useState('');
@@ -78,11 +79,16 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isActive, isWorking
     >
       <div className="flex items-center gap-3">
         <div className={`
-          w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-sm transition-all flex-shrink-0
+          w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-sm transition-all flex-shrink-0 relative
           ${agent.color} text-white
-          ${isWorking ? 'animate-pulse scale-110' : ''}
+          ${isWorking ? 'ring-2 ring-offset-2 ring-[#ec7b5d]/30' : ''}
         `}>
           {agent.avatar}
+          {isWorking && (
+            <div className="absolute -bottom-1 -right-1 bg-white rounded-full p-0.5 border border-slate-100">
+               <Loader2 size={10} className="animate-spin text-[#ec7b5d]" />
+            </div>
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
@@ -109,12 +115,21 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isActive, isWorking
                 </button>
             </div>
           </div>
-          <p className="text-xs text-slate-500 truncate font-medium">{agent.role}</p>
+          
+          {/* Status Message or Role */}
+          {isWorking && statusMessage ? (
+             <p className="text-[10px] text-[#ec7b5d] font-bold animate-pulse truncate">
+               {statusMessage}
+             </p>
+          ) : (
+             <p className="text-xs text-slate-500 truncate font-medium">{agent.role}</p>
+          )}
+
         </div>
       </div>
       
-      {/* Description (Hidden if any drawer is open to save space) */}
-      {!showKnowledge && !showSettings && (
+      {/* Description (Hidden if any drawer is open OR if working to keep it clean) */}
+      {!showKnowledge && !showSettings && !isWorking && (
         <p className={`mt-2 text-xs leading-relaxed line-clamp-2 ${isActive ? 'text-slate-600' : 'text-slate-400'}`}>
           {agent.description}
         </p>

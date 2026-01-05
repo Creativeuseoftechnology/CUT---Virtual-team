@@ -14,18 +14,20 @@ export const generateAgentResponse = async (
 ): Promise<string> => {
   try {
     // 1. Resolve Shared File Content
+    // NOTE: sharedFiles passed here should already be FILTERED by the Manager/App logic
     let sharedContext = "";
     if (sharedFiles.length > 0) {
         const fileContents = await Promise.all(
             sharedFiles.map(async (f) => {
                 const content = await getFileContentFromDB(f.id);
-                return content ? `[FILE: ${f.name}]\n${content.substring(0, 100000)}` : null; 
+                // Agents get larger context of relevant files
+                return content ? `[FILE_ID: "${f.id}" | NAME: "${f.name}"]\n${content.substring(0, 100000)}` : null; 
             })
         );
         const validContents = fileContents.filter(Boolean);
         if (validContents.length > 0) {
             sharedContext = `
-            SHARED PROJECT FILES (CONTEXT FOR EVERYONE):
+            SELECTED RELEVANT PROJECT FILES:
             ${validContents.join('\n\n')}
             `;
         }
@@ -142,7 +144,7 @@ export const generateAgentResponse = async (
 
   } catch (error) {
     console.error(`Error generating response for ${agent.name}:`, error);
-    return `[System Error] ${agent.name} encountered an issue connecting to the AI service (${agent.model}).`;
+    throw error; // Rethrow so the orchestration loop knows it failed
   }
 };
 
@@ -150,22 +152,28 @@ export const generateAgentResponse = async (
 export const getManagerDecision = async (
   history: Message[],
   taskGoal: string,
-  sharedFiles: ProjectFile[] = []
+  sharedFiles: ProjectFile[] = [],
+  critiqueLoopCount: number = 0, // NEW PARAMETER
+  retryCount: number = 0,
+  previousError: string = ""
 ): Promise<ManagerDecision> => {
   try {
-     let sharedContext = "";
+     // OPTIMIZATION: Create a "Catalog" of files instead of sending full content.
+     let fileCatalog = "";
      if (sharedFiles.length > 0) {
-        const fileContents = await Promise.all(
+        const fileSummaries = await Promise.all(
             sharedFiles.map(async (f) => {
                 const content = await getFileContentFromDB(f.id);
-                // Manager only gets summary/start of files to save tokens
-                return content ? `[FILE: ${f.name}]\n${content.substring(0, 5000)}... (truncated)` : null; 
+                // Only take the first 500 chars as a "Preview/Summary" for the Manager
+                const preview = content ? content.substring(0, 500).replace(/\n/g, ' ') : "No content";
+                return `FILE_ID: "${f.id}"\nNAME: "${f.name}" (${f.type})\nPREVIEW: ${preview}...\n`; 
             })
         );
-        const validContents = fileContents.filter(Boolean);
-        if (validContents.length > 0) {
-            sharedContext = `SHARED PROJECT FILES:\n${validContents.join('\n\n')}`;
-        }
+        fileCatalog = `
+        AVAILABLE PROJECT FILES (CATALOG):
+        ----------------------------------
+        ${fileSummaries.join('\n----------------------------------\n')}
+        `;
     }
 
     const contextStr = history
@@ -184,7 +192,7 @@ export const getManagerDecision = async (
       })
       .join('\n');
 
-    // STRICT JSON SCHEMA based on feedback
+    // STRICT JSON SCHEMA based on feedback + File Selection
     const schema = {
       type: Type.OBJECT,
       properties: {
@@ -204,6 +212,11 @@ export const getManagerDecision = async (
             type: Type.STRING, 
             description: "The specific order for the agent OR the question for the user." 
         },
+        relevant_file_ids: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: "Array of FILE_IDs from the catalog that are strictly relevant to this task. Leave empty if none needed."
+        },
         final_response: { 
             type: Type.STRING, 
             description: "Only fill this if FINISH is selected." 
@@ -215,15 +228,34 @@ export const getManagerDecision = async (
     // ENABLE SEARCH FOR THE MANAGER'S DECISION PROCESS
     const tools: Tool[] = [{ googleSearch: {} }];
 
+    // SELF-CORRECTION INJECTION
+    let errorContext = "";
+    if (previousError) {
+        errorContext = `
+        !!! SYSTEM WARNING - PREVIOUS OUTPUT WAS INVALID !!!
+        Your previous attempt resulted in this error: "${previousError}".
+        
+        YOU MUST FIX THE JSON STRUCTURE. 
+        - Ensure all required fields (thought_process, next_action, instructions) are present.
+        - Ensure output is valid JSON.
+        `;
+    }
+
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `
-        ${sharedContext}
+        ${fileCatalog}
 
         The user's original goal is: "${taskGoal}"
         
         PROGRESS LOG:
         ${contextStr}
+
+        === SYSTEM STATUS ===
+        Current Refinement Loop Count: ${critiqueLoopCount} / 2.
+        (If count < 2 and specific feedback exists, favor fixing it internally. If count >= 2, favor ASK_USER).
+
+        ${errorContext}
       `,
       config: {
         systemInstruction: `You are Nexus, the Strategic Director. Your ONLY goal is to deliver a perfect interactive dashboard in the Canvas.
@@ -231,8 +263,9 @@ export const getManagerDecision = async (
         STRICT WORKFLOW:
 
         1.  **ANALYSIS:** 
-            -   ALWAYS check 'SHARED PROJECT FILES' first for context.
-            -   If data is provided in a file, you MUST use it.
+            -   ALWAYS check 'AVAILABLE PROJECT FILES (CATALOG)' first.
+            -   If specific files are needed for the next step, ADD their FILE_IDs to the 'relevant_file_ids' array in the JSON response.
+            -   Be precise. Do not send irrelevant files to agents.
 
         2.  **DELEGATION CHAIN:**
             -   **Atlas:** For extracting data/facts.
@@ -243,27 +276,90 @@ export const getManagerDecision = async (
             -   As soon as Cipher creates an <ARTIFACT>, you **MUST NOT** finish.
             -   You **MUST** delegate to **Socrates** (Logic) or **Pixel** (Design) for feedback.
 
-        4.  **USER CONSENSUS:**
-            -   Use 'ASK_USER' to present expert suggestions: "Socrates suggests X, Pixel suggests Y. Shall we implement these for V2?"
+        4.  **THE SOCRATIC LOOP (AUTONOMOUS REFINEMENT):**
+            -   If Socrates or Pixel provides negative feedback:
+            -   CHECK: Is the "Refinement Loop Count" < 2?
+            -   YES: Delegate IMMEDIATELY back to **Cipher** with instructions to fix the issues. DO NOT ASK THE USER.
+            -   NO (Count >= 2): Stop the loop. Present the current result to the User and ask for their decision.
 
         5.  **OUTPUT FORMAT:**
             -   Answer exclusively in JSON format according to the agreed schema.
         `,
         responseMimeType: "application/json",
         responseSchema: schema,
-        tools: tools // Enable search for the decision brain
+        tools: tools 
       }
     });
 
     if (!response.text) throw new Error("Empty response from Manager");
+    
     return JSON.parse(response.text) as ManagerDecision;
 
-  } catch (error) {
-    console.error("Manager decision error:", error);
+  } catch (error: any) {
+    console.error(`Manager decision error (Attempt ${retryCount}):`, error);
+    
+    // RECURSIVE RETRY LOGIC (Max 2 retries)
+    if (retryCount < 2) {
+        console.log("Retrying Manager Decision due to JSON/Generation error...");
+        return getManagerDecision(history, taskGoal, sharedFiles, critiqueLoopCount, retryCount + 1, error.message || "Invalid JSON");
+    }
+
+    // Fallback if retries fail
     return {
-      thought_process: "Error.",
+      thought_process: "Critical System Failure. I tried to plan the next step multiple times but failed.",
       next_action: 'FINISH',
-      final_response: "System error in orchestration."
+      final_response: `I apologize. I encountered a persistent system error: ${error.message || "Unknown Error"}. Please try again.`
     };
   }
+};
+
+// NEW: Function to compress history
+export const summarizeConversation = async (history: Message[]): Promise<Message[]> => {
+    // Keep last 5 messages intact to preserve immediate context/flow
+    if (history.length <= 5) return history;
+
+    const messagesToSummarize = history.slice(0, history.length - 5);
+    const recentMessages = history.slice(history.length - 5);
+
+    const transcript = messagesToSummarize
+        .map(m => `[${m.senderId}]: ${m.content}`)
+        .join('\n\n');
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: `
+            You are the Team Archivist. Compress the following chat transcript into a single summary.
+            
+            RULES:
+            1. Retain the User's original specific goal/request.
+            2. Retain the most recent strategic decisions by Nexus (Manager).
+            3. Retain the *latest* status of the HTML Artifact (what features are built?).
+            4. DISCARD raw data dumps from Atlas/Researcher (summarize findings briefly).
+            5. DISCARD repetitive loops.
+            
+            TRANSCRIPT:
+            ${transcript}
+            `,
+            config: {
+                systemInstruction: "You are an efficient archivist. Output a concise summary paragraph.",
+            }
+        });
+
+        const summaryText = response.text || "Previous conversation summarized.";
+
+        const summaryMessage: Message = {
+            id: 'summary-' + Date.now(),
+            senderId: AgentRole.MANAGER, // System/Manager owns the memory
+            content: `**🗄️ System Archive (Compressed Memory):**\n\n${summaryText}`,
+            timestamp: Date.now(),
+            type: 'plan' // Treat as a planning/context node
+        };
+
+        return [summaryMessage, ...recentMessages];
+
+    } catch (error) {
+        console.error("Summarization failed:", error);
+        return history; // Fail safe: return original
+    }
 };

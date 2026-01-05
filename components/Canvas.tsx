@@ -3,13 +3,14 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { jsPDF } from 'jspdf';
 import * as Diff from 'diff';
-import { X, Copy, Check, Eye, Download, Save, ChevronDown, FileJson, FileType, FileText, Code, GitCommit, GitCompare, History, ArrowLeft, ArrowRight } from 'lucide-react';
+import { X, Copy, Check, Eye, Download, Save, ChevronDown, FileJson, FileType, FileText, Code, GitCommit, GitCompare, History, ArrowLeft, ArrowRight, UploadCloud } from 'lucide-react';
 
 interface CanvasProps {
   content: string;
   onChange: (newContent: string) => void;
   onClose: () => void;
   onSaveAsFile: (content: string) => void;
+  onSyncToTeam: (content: string) => void; // NEW PROP
 }
 
 interface Version {
@@ -18,10 +19,11 @@ interface Version {
   label: string;
 }
 
-export const Canvas: React.FC<CanvasProps> = ({ content, onChange, onClose, onSaveAsFile }) => {
+export const Canvas: React.FC<CanvasProps> = ({ content, onChange, onClose, onSaveAsFile, onSyncToTeam }) => {
   const [mode, setMode] = useState<'edit' | 'preview' | 'diff'>('preview');
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [synced, setSynced] = useState(false); // NEW STATE
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   
@@ -51,9 +53,6 @@ export const Canvas: React.FC<CanvasProps> = ({ content, onChange, onClose, onSa
   // Handle version selection
   const handleRestoreVersion = (index: number) => {
     setCurrentVersionIndex(index);
-    // Notify parent of change without triggering a new history entry immediately (handled by useEffect logic but we want to view it first)
-    // Actually, we should just update the view here, and if they 'save' or edit, it becomes a new branch/version.
-    // For simplicity, restore updates the main content.
     onChange(history[index].content);
     setShowHistory(false);
   };
@@ -123,6 +122,12 @@ export const Canvas: React.FC<CanvasProps> = ({ content, onChange, onClose, onSa
     setTimeout(() => setSaved(false), 2000);
   }
 
+  const handleSync = () => {
+      onSyncToTeam(content);
+      setSynced(true);
+      setTimeout(() => setSynced(false), 2500);
+  }
+
   // --- Diff Rendering Logic ---
   const renderDiff = () => {
     if (history.length < 2 || currentVersionIndex === 0) {
@@ -187,6 +192,19 @@ export const Canvas: React.FC<CanvasProps> = ({ content, onChange, onClose, onSa
 
         <div className="flex items-center gap-2">
             
+            {/* SYNC TO TEAM BUTTON (NEW) */}
+            <button 
+                onClick={handleSync}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all
+                ${synced ? 'bg-green-50 border-green-200 text-green-600' : 'bg-white border-[#ec7b5d] text-[#ec7b5d] hover:bg-orange-50'}`}
+                title="Update Agents with current Canvas content"
+            >
+                {synced ? <Check size={14} /> : <UploadCloud size={14} />}
+                {synced ? 'Synced!' : 'Sync to Team'}
+            </button>
+
+            <div className="w-px h-6 bg-slate-200 mx-1"></div>
+
             {/* History Control */}
             <div className="relative">
                 <button 

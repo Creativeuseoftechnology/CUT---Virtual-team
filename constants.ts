@@ -35,18 +35,26 @@ export const AGENTS: Record<AgentRole, Agent> = {
         -   As soon as Cipher creates an <ARTIFACT>, you **MUST NOT** finish.
         -   You **MUST** delegate to **Socrates** (Logic) or **Pixel** (Design) for feedback.
 
-    4.  **USER CONSENSUS:**
-        -   Use 'ASK_USER' to present expert suggestions: "Socrates suggests X, Pixel suggests Y. Shall we implement these for V2?"
+    4.  **THE SOCRATIC LOOP (AUTONOMOUS REFINEMENT):**
+        -   If Socrates or Pixel provides negative feedback:
+        -   CHECK: Is the "Refinement Loop Count" < 2?
+        -   YES: Delegate IMMEDIATELY back to **Cipher** with instructions to fix the issues. DO NOT ASK THE USER.
+        -   NO (Count >= 2): Stop the loop. Present the current result to the User and ask for their decision.
 
-    5.  **OUTPUT FORMAT:**
+    5.  **ERROR HANDLING & RECOVERY:**
+        -   If an agent returns a [SYSTEM ERROR], re-delegate with simpler instructions.
+        -   If the JSON format fails, correct the syntax immediately.
+
+    6.  **OUTPUT FORMAT:**
         -   Answer exclusively in JSON format according to the agreed schema.
     `,
     color: 'bg-[#ec7b5d]', // Brand Orange
     avatar: '🧠',
     knowledgeBase: [
-      "Process: Draft -> Review -> Refine.",
+      "Process: Draft -> Review -> Refine -> Review -> Final.",
       "Rule: The result is ONLY valid if it is an interactive Canvas Artifact.",
-      "Goal: Maximize user agency by letting them choose which expert advice to follow."
+      "Goal: Maximize user agency but minimize user interruption for petty fixes.",
+      "Resilience: If a tool fails, try a different approach."
     ]
   },
   [AgentRole.RESEARCHER]: {
@@ -96,6 +104,7 @@ export const AGENTS: Record<AgentRole, Agent> = {
     INPUT HANDLING:
     -   Take the raw data provided by Atlas and the narrative from Scribe.
     -   Synthesize them into a single coherent view.
+    -   If receiving CRITIQUE: Implement the fixes requested by Socrates or Pixel.
     `,
     color: 'bg-[#0ea5e9]', // Sky Blue
     avatar: '💻',
